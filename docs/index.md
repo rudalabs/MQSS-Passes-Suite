@@ -1,14 +1,11 @@
-# Collection of Passes of the MQSS {#mainpage}
-
-<!-- IMPORTANT: Keep the line above as the first line and do not remove the label above. -->
-<!----------------------------------------------------------------------------
+<!--------------------------------------------------------------------------------------------------
 Copyright 2024 Munich Quantum Software Stack Project
 
 Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the
 "License"); you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-https://github.com/Munich-Quantum-Software-Stack/passes/blob/develop/LICENSE
+https://github.com/Munich-Quantum-Software-Stack/MQSS-Quantum-Compilation-Suite/blob/develop/LICENSE
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,36 +14,35 @@ License for the specific language governing permissions and limitations under
 the License.
 
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
--------------------------------------------------------------------------- -->
+----------------------------------------------------------------------------------------------------->
 
-<!-- The label is needed to set this page as the main page in Doxygen. -->
-<!-- This file is a static page and included in the CMakeLists.txt file. -->
-
-## MLIR Passes of the Munich Quantum Software Stack (MQSS)
-
-<!-- Include the content of README.md between the pair of markers DOXYGEN MAIN. -->
-
-\snippet{doc} README.md DOXYGEN MAIN
-
-<div align="center">
-  <img class="mlir-passes" alt="MLIR passes" src="mlir-passes.png" width=100%>
+```{raw} html
+<div style="text-align: center; margin-top: 2rem;">
+  <img src="_static/mqss_logo.svg" class="logo-light" style="width: 20%;">
+  <img src="_static/mqss_logo_dark.svg" class="logo-dark" style="width: 20%;">
 </div>
-### How to Use this Documentation?
+<style>
+  body[data-theme="light"] .logo-dark  { display: none; }
+  body[data-theme="dark"]  .logo-light { display: none; }
+  body[data-theme="auto"] .logo-dark   { display: none; }
+  @media (prefers-color-scheme: dark) {
+    body[data-theme="auto"] .logo-dark  { display: inline; }
+    body[data-theme="auto"] .logo-light { display: none; }
+  }
+</style>
+```
 
-This documentation provides helpful information to get you started with the collection of MLIR
-passes of the Munich Quantum Software Stack (MQSS).
+# Munich Quantum Software Stack (MQSS) Quantum Compilation Suite
 
-#### General Information
+Welcome to the MQSS-Quantum Compilation Suite documentation page! This documentation provides
+helpful information to get you started with the Quantum Compilation suite of the Munich Quantum
+Software Stack (MQSS).
 
-The [FAQ](faq.md) page gives an overview over frequently asked questions.
+```{toctree}
+:maxdepth: 2
+:caption: Contents
 
-#### Hands-On
-
-[Declaring Custom Passes](templates.md) page provides an step-by-step guide to show you how you can
-implement custom MLIR passes to be used into the MQSS. When you want to validate your custom MLIR
-passes, the [Development Guide](guide.md) page is a good starting point.
-
-#### Specific Information about the Implementation of this Collection
-
-When you are interested in the details of the semantics of functions and the whole API, the
-[Reference Documentation](files.html) page is the right place to look for.
+user_guide/index
+develop-guide/index
+faqs/index
+```

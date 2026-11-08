@@ -1,0 +1,78 @@
+/* This code and any associated documentation is provided "as is"
+
+Copyright 2024 Munich Quantum Software Stack Project
+
+Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the
+"License"); you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://github.com/Munich-Quantum-Software-Stack/MQSS-Quantum-Compilation-Suite/blob/develop/LICENSE
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+*/
+
+#include "Passes/CodeGen/CodeGenPasses.h"
+#include "Utils/DebugUtils.h"
+#include "cudaq/Optimizer/CodeGen/OpenQASMEmitter.h"
+#include "mlir/Target/LLVMIR/ModuleTranslation.h"
+
+namespace mqss::mqssci::codegen {
+
+#define GEN_PASS_DEF_QUAKETOQASM2PASS
+#include "Passes/CodeGen/CodeGen.h.inc"
+
+} // namespace mqss::mqssci::codegen
+
+using namespace mlir;
+using namespace llvm;
+
+namespace {
+
+struct QuakeToQASM2
+    : public mqss::mqssci::codegen::impl::QuakeToQASM2PassBase<QuakeToQASM2> {
+
+public:
+  QuakeToQASM2() = default;
+
+  explicit QuakeToQASM2(llvm::raw_ostream &os) : os(os) {}
+
+  void runOnOperation() override {
+    MQSS_DEBUG("\n[Applying Pass: QuakeToQASM2]\n");
+    mlir::ModuleOp module = getOperation();
+    MQSS_DEBUG("\nTranslated output:\n");
+    auto result = cudaq::translateToOpenQASM(module, os);
+    if (result.failed()) {
+      mlir::emitError(
+          module->getLoc(),
+          "QuakeDialectToQASM2: Failed to translate Quake to QASM2");
+      signalPassFailure();
+      return;
+    }
+    if (failed(module.verify())) {
+      llvm::errs() << "[" << getArgument() << "]"
+                   << " : MLIR Module verification failed\n";
+      signalPassFailure();
+      return;
+    }
+  }
+
+private:
+  llvm::raw_ostream &os = llvm::outs();
+};
+
+} // namespace
+
+std::unique_ptr<mlir::Pass> mqss::mqssci::codegen::QuakeToQASM2Pass() {
+  return std::make_unique<QuakeToQASM2>();
+}
+
+std::unique_ptr<mlir::Pass>
+mqss::mqssci::codegen::QuakeToQASM2Pass(llvm::raw_ostream &os) {
+  return std::make_unique<QuakeToQASM2>(os);
+}

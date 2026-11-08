@@ -1,27 +1,52 @@
 # AI Pass Selector
 
+Reinforcement-learning agents that optimize Quake circuits by picking a sequence of gate-level
+rewrite passes. The user-facing documentation (building, CLI options, action space, reward, datasets
+and evaluation results) is in the suite docs at
+[docs/user_guide/ai-pass-selector.md](../docs/user_guide/ai-pass-selector.md). This README covers
+the concepts behind the selector and collects notes on the research papers it builds on.
+
 ## Build & Usage
 
 ### Building the project
 
-The top-level `MQSS-Passes-Suite` repository containes two scripts for building the
-project: [build_initial.sh](../build_initial.sh) and [rebuild.sh](../rebuild.sh).
-If you have succesfully and correctly built the [docker container](../.devcontainer/dockerContainer.Dockerfile) for this
-project or installed all necessary dependencies into `~/.local` and adjusted `~/.bashrc` in case you mean to run this on
-the LRZ GPU where building a docker container is not permitted, you should be able to succesfully run
-the [build_initial.sh](../build_initial.sh) script to initially build all additional dependencies
-into  [build/_deps](../build/_deps).
-Afterward you should no longer need to run [build_initial.sh](../build_initial.sh) to perform a first-time build but
-default to instead running [rebuild.sh](../rebuild.sh) for a faster build which assumes deps of the project which had to
-be built initially had been built.
+The selector is part of the main CMake project but is off by default. Build the suite the usual
+way (see [docs/user_guide/build.md](../docs/user_guide/build.md)), then enable the AI targets:
+
+```bash
+make mqss-opt && make target
+cmake -B build -DBUILD_MQSS_AI=ON
+ninja -C build ai_pass_selector convert_qasm_dataset_to_quake convert_quake_testsuite_to_tikz
+```
+
+Extra dependencies:
+
+- LibTorch, unpacked into `AI/external/libtorch` (git-ignored).
+- `yaml-cpp`.
+- The CUDA-Q MLIR runtime (`cudaq-mlir-runtime`).
+
+The agents' action space is defined by the one-rewrite-per-pass Quake passes in [legacy](legacy).
+Upstream replaced these with dialect-agnostic `Common*` passes, so they are kept here and built by
+[legacy/CMakeLists.txt](legacy/CMakeLists.txt). Changing the pass list or its order in
+[passes_utils.hpp](include/Utils/passes_utils.hpp) invalidates every trained agent in [Agents](Agents).
+
+The scripts in [Scripts/legacy-build](Scripts/legacy-build) (`build_initial.sh`, `rebuild.sh`,
+`start_docker.sh`) are from the pre-merge build system. They are kept for reference only, mainly
+for building on the LRZ GPU nodes, where Docker isn't available.
 
 ### Running AI Pass Selector
 
-The [ai_pass_selector](../build/AI/ai_pass_selector) executable gets built
-to [MQSS-PASSES-SUITE/build/AI/ai_pass_selector](../build/AI/ai_pass_selector).
-Tun run it, simply go to [build/AI](../build/AI) by running `cd build/AI` from repo root, and execute it by running
-`./ai_pass_selector [Parameters]`.
-Run `./ai_pass_selector --help` or `./ai_pass_selector -h` to see whaat parameters are available for setting.
+The `ai_pass_selector` executable is built to `build/AI/ai_pass_selector`. Run it from any
+directory, since the dataset and agent paths are compiled in:
+
+```bash
+cd build/AI
+./ai_pass_selector --help                                        # list all key=value parameters
+./ai_pass_selector dataset=Chemistry info=true                   # dataset info + RQCG statistics
+./ai_pass_selector agent=ppo-mq28-hybrid circuit=in.qke output=out.qke   # optimize one circuit
+./ai_pass_selector agent=a2c-mq28-tcn dataset=Chemistry          # train
+./ai_pass_selector agent=a2c-mq28-tcn dataset=Chemistry evaluate=true    # evaluate
+```
 
 Agents are referenced by a three-part, dash-separated name of the form
 `<rl-algorithm>-mq<max-qubits>-<nn-architecture>`.

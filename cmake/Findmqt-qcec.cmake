@@ -2,11 +2,11 @@ include(FetchContent)
 
 FetchContent_Declare(
   mqt-qcec
-  GIT_REPOSITORY https://github.com/cda-tum/mqt-qcec.git
-  GIT_TAG v2.8.1)
+  GIT_REPOSITORY https://github.com/munich-quantum-toolkit/qcec
+  GIT_TAG v3.8.0)
 
 FetchContent_MakeAvailable(mqt-qcec)
 
 FetchContent_GetProperties(mqt-qcec)
 
-set(QCEC_INCLUDE_DIRS "${mqt-qcec_SOURCE_DIR}/include")
+set(MQT_QCEC_INCLUDE_DIR "${mqt-qcec_SOURCE_DIR}/include")

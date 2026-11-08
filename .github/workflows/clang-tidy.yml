@@ -1,0 +1,70 @@
+name: clang-tidy
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  clang-tidy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pull the private mqssci-deps image referenced by .devcontainer/Dockerfile
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0 # need history to diff against the base branch
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          docker system prune -af
+
+      - name: Log in to GHCR
+        run:
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}"
+          --password-stdin
+
+      # Shared with .github/workflows/ci.yml and codeql.yml so this can't drift from
+      # ci.yml's build-arg -- otherwise this job would silently fall back to
+      # .devcontainer/Dockerfile's hardcoded default ARG, which points at the
+      # upstream org's image and 403s from a fork's GITHUB_TOKEN.
+      - name: Compute deps image tag
+        id: deps_vars
+        uses: ./.github/actions/compute-deps-image-tag
+
+      - name: Build Docker image
+        run: |
+          docker build --build-arg CMAKE_ARCH=x86_64 \
+            --build-arg DEPS_IMAGE="${{ steps.deps_vars.outputs.image }}" \
+            --progress=plain -t mqss-pass-dev -f .devcontainer/Dockerfile .
+
+      - name: Configure build (generate compile_commands.json)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspaces/MQSS-Quantum-Compilation-Suite" \
+            -w /workspaces/MQSS-Quantum-Compilation-Suite \
+            mqss-pass-dev \
+            bash -lc '
+              make build
+            '
+
+      - name: Run clang-tidy on changed lines
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspaces/MQSS-Quantum-Compilation-Suite" \
+            -w /workspaces/MQSS-Quantum-Compilation-Suite \
+            mqss-pass-dev \
+            bash -lc '
+              git fetch origin ${{ github.base_ref }} --depth=1
+              git diff -U0 origin/${{ github.base_ref }} -- "*.cpp" "*.cc" "*.h" "*.hpp" \
+                | python3 .devcontainer/clang-tidy-diff.py -p1 -path build -j"$(nproc)" -quiet \
+                | tee clang-tidy-report.txt
+              # fail the job only if clang-tidy actually reported something
+              ! grep -q "warning:\|error:" clang-tidy-report.txt
+            '

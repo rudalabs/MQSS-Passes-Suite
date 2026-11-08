@@ -13,10 +13,30 @@ find_package(yaml-cpp CONFIG REQUIRED)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Legacy gate-pattern pass library that defines the agents' action space.
+add_subdirectory(legacy)
+
+# The CUDA-Q MLIR runtime (common/RuntimeMLIR.h) is only available when CUDA-Q
+# was built with its runtime enabled.
+set(MQSS_AI_CUDAQ_RUNTIME "")
+if (TARGET cudaq-mlir-runtime)
+    set(MQSS_AI_CUDAQ_RUNTIME cudaq-mlir-runtime)
+else ()
+    find_library(MQSS_AI_CUDAQ_RUNTIME_LIB cudaq-mlir-runtime
+            HINTS ${CUDAQ_INSTALL_PREFIX}/lib ${CUDAQ_ROOT}/lib)
+    if (MQSS_AI_CUDAQ_RUNTIME_LIB)
+        set(MQSS_AI_CUDAQ_RUNTIME ${MQSS_AI_CUDAQ_RUNTIME_LIB})
+    else ()
+        message(WARNING "cudaq-mlir-runtime not found; AI targets may fail to link.")
+    endif ()
+endif ()
+
 # ---------------- Shared SDK-agnostic ----------------
 add_library(common_ai_props INTERFACE)
 target_include_directories(common_ai_props INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/legacy/include"
+        "${CMAKE_CURRENT_BINARY_DIR}/legacy/include"
 )
 target_compile_definitions(common_ai_props INTERFACE
         AI_DATASET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Datasets"
@@ -28,7 +48,7 @@ target_compile_definitions(common_ai_props INTERFACE
 target_link_libraries(common_ai_props INTERFACE
         MLIRIR
         MLIRTransforms
-        cudaq-mlir-runtime
+        ${MQSS_AI_CUDAQ_RUNTIME}
         MLIRPasses
         SupportQuake
         Optimizer
@@ -50,7 +70,6 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src
 add_library(ai_core STATIC ${ALL_HEADERS} ${ALL_SOURCES})
 target_link_libraries(ai_core PUBLIC common_ai_props)
 target_include_directories(ai_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_include_directories(ai_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../include")
 
 # ---------------- Torch targets ----------------
 if (TARGET Torch::Torch)

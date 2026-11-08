@@ -1,0 +1,29 @@
+name: Compute deps image tag
+description: >
+  Computes the ghcr.io reference for the prebuilt LLVM/MLIR + CUDA-Q + Catalyst deps image (see
+  .devcontainer/deps.DockerFile and .github/workflows/deps-image.yml) from the version pins in
+  cmake/FetchLLVM.cmake, cmake/FindCUDAQ.cmake and cmake/FindCatalyst.cmake. Namespaced under the
+  calling repository (github.repository), so it always resolves to whichever repo/fork is running
+  the workflow instead of a hardcoded upstream image -- keeping ci.yml, codeql.yml and
+  clang-tidy.yml from drifting apart, and letting forks resolve to their own published package
+  instead of needing cross-org GHCR access.
+
+outputs:
+  image:
+    description: >
+      Full image reference, e.g.
+      ghcr.io/<owner>/<repo>/mqssci-deps:llvm<version>-cudaq<tag>-catalyst<tag>
+    value: ${{ steps.deps_vars.outputs.image }}
+
+runs:
+  using: composite
+  steps:
+    - id: deps_vars
+      shell: bash
+      run: |
+        llvm_version=$(grep -A1 'set(MQSS_LLVM_VERSION' cmake/FetchLLVM.cmake | tail -1 | grep -oP '"\K[^"]+')
+        cudaq_tag=$(grep -A1 'set(CUDAQ_GIT_TAG' cmake/FindCUDAQ.cmake | tail -1 | grep -oP '"\K[^"]+')
+        catalyst_tag=$(grep -A1 'set(CATALYST_GIT_TAG' cmake/FindCatalyst.cmake | tail -1 | grep -oP '"\K[^"]+')
+        catalyst_tag=${catalyst_tag#v}
+        image=$(echo "ghcr.io/${{ github.repository }}/mqssci-deps" | tr '[:upper:]' '[:lower:]')
+        echo "image=${image}:llvm${llvm_version}-cudaq${cudaq_tag}-catalyst${catalyst_tag}" >> "$GITHUB_OUTPUT"

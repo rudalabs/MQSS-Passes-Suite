@@ -1,0 +1,156 @@
+/* This code and any associated documentation is provided "as is"
+
+Copyright 2024 Munich Quantum Software Stack Project
+
+Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the
+"License"); you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://github.com/Munich-Quantum-Software-Stack/MQSS-Quantum-Compilation-Suite/blob/develop/LICENSE
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+*/
+
+include "mlir/Pass/PassBase.td"
+
+
+def CommonGateCancellationPass : Pass<"CommonGateCancellationPass", "mlir::ModuleOp"> {
+  let summary = "Performs cancellation of Gates following a specific pattern";
+
+  let description = [{
+          This pass removes the pattern Gate, Gate if both gates operates on the same control and targets.
+          This pass can also remove the gates RX, RZ, RZ having NULL rotation angles.
+  }];
+
+  let constructor = "mqss::mqssci::opt::CommonGateCancellationPass()";
+
+  let options = [
+    Option<"mode", "mode", "std::string",
+      /*default=*//*default=*/"\"CancelGate\"", "Select Pattern to Cancel: CancelGate or CancelNullRotation.">,
+  ];
+
+}
+
+def ExpandMeasurements : Pass<"expand-measurements"> {
+  let summary = "Expand a whole-register quake.mz into one quake.mz per qubit.";
+  let description = [{
+    `quake.mz` can take a statically-sized `!quake.veq` argument to measure an
+    entire register in one op. Some lowering paths have no concept of
+    "measure this whole register" (e.g. IQM JSON, where every `"measure"`
+    instruction names exactly one qubit) and either mistranslate or reject
+    such an op. This pass expands it into one `quake.mz` per qubit, unrolled
+    directly at rewrite time since the register's size is always known from
+    its type -- no runtime loop is introduced.
+
+    Only `quake.mz` on a single, statically-sized `!quake.veq` operand is
+    handled, with either no consumer or `quake.discriminate` consumers (the
+    `!cc.stdvec<!quake.measure>` -> `!cc.stdvec<i1>` bridge). Any other shape
+    (a dynamically-sized register, a non-discriminate consumer) fails the
+    pass with a diagnostic rather than being silently left unexpanded.
+  }];
+
+  // let dependentDialects = ["cudaq::cc::CCDialect", "mlir::LLVM::LLVMDialect"];
+
+  let constructor = "mqss::mqssci::opt::createExpandMeasurementsPass()";
+}
+
+def CommonCommutePass : Pass<"CommonCommutePass", "mlir::ModuleOp"> {
+  let summary = "This pass searches commutes gates that match a specific pattern.";
+  let constructor = "mqss::mqssci::opt::CommonCommutePass()";
+
+  let description = [{
+          This pass searches for the gate Op pattern GATE1 followed by GATE2 and commutes them i.e
+          GATE2 followed by GATE1. Supported Gate Op patterns are:
+          1. CX followed by RX (Commuted to RX followed by CX)
+          2. RX followed by CX
+          3. CX followed by X
+          4. X followed by CX
+          5. CX followed by Z
+          6. Z followed by CX
+  }];
+
+  let options = [
+    Option<"mode", "mode", "std::string",
+      /*default=*//*default=*/"\"CX-RX\"", "Select Pattern to Commute: CX-RX, RX-CX, CX-X, X-CX, CX-Z, Z-CX.">,
+  ];
+
+}
+
+def CommonSwitchPass : Pass<"CommonSwitchPass", "mlir::ModuleOp"> {
+  let summary = "Commute and Switch Gates.";
+
+  let description = [{
+    Commute and Switch specific gates, Pauli{X,Y,Z}..H -> H...Pauli{X,Y,Z}
+    or H...Pauli{X,Y,Z} -> Pauli{X,Y,Z}..H.
+  }];
+
+ let constructor = "mqss::mqssci::opt::CommonSwitchPass()";
+
+  let options = [
+    Option<"mode", "mode", "std::string",
+      /*default=*//*default=*/"\"XYZHtoHXYZ\"", "Select Pattern to Switch: XYZHtoHXYZ or HXYZtoXYZH.">,
+  ];
+}
+
+
+def CommonReductionPass : Pass<"CommonReductionPass", "mlir::ModuleOp"> {
+  let summary = "Perform Circuit Reduction, {HZH} -> X, {HXH} -> Z, {SAdjZ} -> S or {SZ} -> SAdj. ";
+
+  let description = [{
+    Perform Circuit Gate Pattern Reduction.
+    Supported modes: {HZH} -> X, {HXH} -> Z, {SAdjZ} -> S or {SZ} -> SAdj.
+  }];
+
+ let constructor = "mqss::mqssci::opt::CommonReductionPass()";
+
+  let options = [
+    Option<"mode", "mode", "std::string",
+      /*default=*//*default=*/"\"HXHToZ\"", "Select PassMode HXHToZ , HZHToX, SAdjZToS or SZToSAdj.">,
+  ];
+}
+
+
+def CommonCNOTReversePass : Pass<"CommonCNOTReversePass", "mlir::ModuleOp"> {
+  let summary = "Reverse the control and targets of each CNot gate in a circuit";
+
+  let description = [{
+       Reverse the control and targets of each CNot gate in a circuit.
+  }];
+
+ let constructor = "mqss::mqssci::opt::CommonCNOTReversePass()";
+}
+
+def CommonNormalizeArgAnglePass : Pass<"CommonNormalizeArgAnglePass", "mlir::ModuleOp"> {
+  let summary = "Normalize Arg angle of RX, RY, RZ gates. ";
+
+  let description = [{
+    Normalize Arg angle of RX, RY, RZ gates.
+  }];
+
+ let constructor = "mqss::mqssci::opt::CommonNormalizeArgAnglePass()";
+}
+
+
+def CommonMappingPass : Pass<"CommonMappingPass", "mlir::ModuleOp"> {
+  let summary = "A dialect-agnostic mapping pass";
+  let description = [{
+    A dialect-agnostic mapping pass that accepts an input JSON
+    or a QDMI device .conf file.
+  }];
+  let options = [
+    Option<"input", "input", "std::string",
+           /*default=*/"\"\"",
+           "Path to JSON input.">,
+    Option<"qdmi", "qdmi", "std::string",
+           /*default=*/"\"\"",
+           "Path to a QDMI device .conf file.">,
+  ];
+
+ let constructor = "mqss::mqssci::opt::CommonMappingPass()";
+}

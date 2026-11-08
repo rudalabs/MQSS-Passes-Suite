@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches: [develop]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # Step 1: Checkout repo (gives us the Dockerfile)
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # Cache the CMake build dir (build/_deps and friends) so unchanged dependencies
+      # that still fetch+build from source at configure time (MQT-Core, MQT-QMAP, QDMI --
+      # LLVM/CUDA-Q/Catalyst instead come prebuilt from DEPS_IMAGE above) aren't rebuilt
+      # from scratch every run -- only invalidated when the Dockerfile or the CMake files
+      # that pin dependency versions change, not by changes to our own source.
+      - name: Cache CMake build directory
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key:
+            build-${{ runner.os }}-${{ hashFiles('.devcontainer/Dockerfile', 'CMakeLists.txt',
+            'cmake/**') }}
+          restore-keys: |
+            build-${{ runner.os }}-
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          docker system prune -af
+
+      # Compute the exact deps image tag these pins map to, so CI never drifts from
+      # .devcontainer/Dockerfile's own hardcoded default ARG -- if someone bumps a pin
+      # here without deps-image.yml having published a matching tag yet, this fails
+      # loudly on a missing manifest instead of silently building against a
+      # stale/mismatched deps image.
+      - name: Compute deps image tag
+        id: deps_vars
+        uses: ./.github/actions/compute-deps-image-tag
+
+      # GHCR images pushed with GITHUB_TOKEN are private by default, so the
+      # docker build below needs to authenticate to pull DEPS_IMAGE even
+      # though it's coming from this same repo's own package registry.
+      - name: Log in to GHCR
+        run:
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}"
+          --password-stdin
+
+      # Step 2: Build Docker image using relative path
+      - name: Build Docker image
+        run: |
+          docker build --build-arg CMAKE_ARCH=x86_64 \
+           --build-arg DEPS_IMAGE="${{ steps.deps_vars.outputs.image }}" \
+           --progress=plain -t mqss-pass-dev -f .devcontainer/Dockerfile .
+
+      - name: Build
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspaces/MQSS-Quantum-Compilation-Suite" \
+            -w /workspaces/MQSS-Quantum-Compilation-Suite \
+            mqss-pass-dev \
+            bash -lc '
+              git config --global --add safe.directory "*"
+              make build
+              make target
+            '
+
+      - name: Run Tests
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspaces/MQSS-Quantum-Compilation-Suite \
+            -w /workspaces/MQSS-Quantum-Compilation-Suite \
+            mqss-pass-dev \
+            bash -lc '
+            export PATH="/workspaces/MQSS-Quantum-Compilation-Suite/build/bin:$PATH"
+            which mqss-opt
+            make test-dialects
+            make test-interfaces '

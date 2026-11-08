@@ -1,0 +1,60 @@
+name: Deploy Docs
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # manual re-run from the Actions tab, e.g. for testing
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # sphinx-multiversion needs full history/tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        # sphinx pinned: sphinx-multiversion (last released 2020, unmaintained, no upper
+        # sphinx bound) breaks against newer Sphinx internals (e.g. Config.read()'s
+        # signature changing) -- 8.1.3 is verified compatible and within furo's/
+        # myst-parser's own supported ranges.
+        run: pip install "sphinx==8.1.3" myst-parser furo sphinx-multiversion
+
+      - name: Build versioned docs
+        run: sphinx-multiversion docs _build/html
+
+      - name: Set default (stable) version and landing-page redirect
+        run: |
+          LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$LATEST_TAG" ] || [ ! -d "_build/html/$LATEST_TAG" ]; then
+            echo "::error::No built version tag found to use as the 'stable' default." >&2
+            exit 1
+          fi
+          cp -r "_build/html/$LATEST_TAG" "_build/html/stable"
+          printf '%s\n' \
+            '<!DOCTYPE html>' \
+            '<html>' \
+            '<head>' \
+            '  <meta charset="utf-8">' \
+            '  <meta http-equiv="refresh" content="0; url=stable/index.html">' \
+            '  <link rel="canonical" href="stable/index.html">' \
+            '</head>' \
+            '<body>' \
+            '  <p>Redirecting to the <a href="stable/index.html">stable</a> documentation...</p>' \
+            '</body>' \
+            '</html>' \
+            > _build/html/index.html
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _build/html

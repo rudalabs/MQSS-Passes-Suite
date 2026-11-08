@@ -1,0 +1,495 @@
+/* This code and any associated documentation is provided "as is"
+
+Copyright 2024 Munich Quantum Software Stack Project
+
+Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the
+"License"); you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://github.com/Munich-Quantum-Software-Stack/MQSS-Quantum-Compilation-Suite/blob/develop/LICENSE
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+*/
+
+#include "Passes/CodeGen/BasisConversionPatterns.h"
+#include "Passes/CodeGen/CodeGenPasses.h"
+#include "Utils/DebugUtils.h"
+#include "Utils/TranspilationPassUtils.h"
+
+#include <llvm/ADT/StringSet.h>
+#include <llvm/Support/Error.h>
+#include <mlir/Transforms/GreedyPatternRewriteDriver.h>
+
+namespace mqss::mqssci::codegen {
+
+#define GEN_PASS_DEF_BASISCONVERSIONPASS
+#include "Passes/CodeGen/CodeGen.h.inc"
+
+} // namespace mqss::mqssci::codegen
+
+using namespace mlir;
+
+namespace {
+
+const std::unordered_map<std::string, std::vector<DecompositionRule>> &
+getDecompositionTable(const QuantumDialect &DialectTy) {
+  static const std::unordered_map<std::string, std::vector<DecompositionRule>>
+      table = [] {
+        std::unordered_map<std::string, std::vector<DecompositionRule>> t;
+        t["h"] = {
+            // Always emits a fixed pi/2 Rx, i.e. "sx" (sqrt-X), not a
+            // generic parameterized one -- see the comment on
+            // rewriteHToRzRxRz.
+            makeRule<quake::HOp>("HToRzSxRz", {"rz", "sx"}, rewriteHToRzRxRz),
+            makeRule<quake::HOp>("HToU3", {"u3"}, rewriteHToU3),
+            makeRule<quake::HOp>("HToPhasedRx", {"prx"}, rewriteHToPhasedRx)};
+        t["x"] = {
+            makeRule<quake::XOp>("XToHZH", {"h", "z"}, rewriteXToHZH),
+            makeRule<quake::XOp>("XToRx", {"rx"}, rewriteXToRx),
+            makeRule<quake::XOp>("XToPhasedRx", {"prx"}, rewriteXToPhasedRx)};
+        t["y"] = {
+            makeRule<quake::YOp>("YToRy", {"ry"}, rewriteYToRy),
+            makeRule<quake::YOp>("YToPhasedRx", {"prx"}, rewriteYToPhasedRx)};
+        t["z"] = {makeRule<quake::ZOp>("ZToHXH", {"h", "x"}, rewriteZToHXH),
+                  makeRule<quake::ZOp>("ZToRz", {"rz"}, rewriteZToRz)};
+        t["s"] = {
+            makeRule<quake::SOp>("SToRz", {"rz"}, rewriteSToRz),
+            makeRule<quake::SOp>("SToSdgSdgSdg", {"sdg"}, rewriteSToSdgSdgSdg),
+            makeRule<quake::SOp>("SToTT", {"t"}, rewriteSToTT),
+            makeRule<quake::SOp>("SToPhasedRx", {"prx"}, rewriteSToPhasedRx)};
+        t["sdg"] = {makeRule<quake::SOp>("SdgToRz", {"rz"}, rewriteSdgToRz),
+                    makeRule<quake::SOp>("SdgToSSS", {"s"}, rewriteSdgToSSS)};
+        t["t"] = {
+            makeRule<quake::TOp>("TToRz", {"rz"}, rewriteTToRz),
+            makeRule<quake::TOp>("TToPhasedRx", {"prx"}, rewriteTToPhasedRx)};
+        t["tdg"] = {makeRule<quake::TOp>("TdgToRz", {"rz"}, rewriteTdgToRz)};
+        t["r1"] = {makeRule<quake::R1Op>("R1ToRz", {"rz"}, rewriteR1ToRz),
+                   makeRule<quake::R1Op>("R1ToPhasedRx", {"prx"},
+                                         rewriteR1ToPhasedRx)};
+        t["rx"] = {
+            makeRule<quake::RxOp>("RxToHRzH", {"h", "rz"}, rewriteRxToHRzH),
+            makeRule<quake::RxOp>("RxToPhasedRx", {"prx"},
+                                  rewriteRxToPhasedRx)};
+        // "sx" is the fixed pi/2 special case of "rx" (see classifyOp); reuse
+        // the same prx fallback rather than duplicating it. It has no
+        // fallback through "h"/"rz" because that path is exactly how "h"
+        // itself produces "sx" in the first place (HToRzSxRz above) -- a
+        // rule the other way would just bounce the two back and forth.
+        t["sx"] = {makeRule<quake::RxOp>("SxToPhasedRx", {"prx"},
+                                         rewriteRxToPhasedRx)};
+        t["ry"] = {makeRule<quake::RyOp>("RyToRzRxRz", {"rz", "rx"},
+                                         rewriteRyToRzRxRz)};
+        t["rz"] = {
+            makeRule<quake::RzOp>("RzToHRxH", {"h", "rx"}, rewriteRzToHRxH),
+            makeRule<quake::RzOp>("RzToU3", {"u3"}, rewriteRzToU3),
+            makeRule<quake::RzOp>("RzToPhasedRx", {"prx"},
+                                  rewriteRzToPhasedRx)};
+        t["u2"] = {makeRule<quake::U2Op>("U2ToRzRyRz", {"rz", "ry"},
+                                         rewriteU2ToRzRyRz),
+                   makeRule<quake::U2Op>("U2ToU3", {"u3"}, rewriteU2ToU3)};
+        t["u3"] = {makeRule<quake::U3Op>("U3ToRzRyRz", {"rz", "ry"},
+                                         rewriteU3ToRzRyRz)};
+        t["swap"] = {makeRule<quake::SwapOp>("SwapToUpperCxCxCx", {"cx"},
+                                             rewriteSwapToUpperCxCxCx)};
+        t["cx"] = {makeRule<quake::XOp>("CxToUpperHCzH", {"h", "cz"},
+                                        rewriteCxToUpperHCzH)};
+        t["cz"] = {makeRule<quake::ZOp>("CzToUpperHCxH", {"h", "cx"},
+                                        rewriteCzToUpperHCxH)};
+        t["cy"] = {makeRule<quake::YOp>("CyToSCxSdg", {"s", "cx", "sdg"},
+                                        rewriteCyToSCxSdg)};
+        t["crx"] = {makeRule<quake::RxOp>("CrxToHCrzH", {"h", "crz"},
+                                          rewriteCrxToHCrzH)};
+        t["crz"] = {makeRule<quake::RzOp>("CrzToHCrxH", {"h", "crx"},
+                                          rewriteCrzToHCrxH),
+                    makeRule<quake::RzOp>("CrzToRzCu3", {"rz", "u3"},
+                                          rewriteCrzToRzCu3),
+                    makeRule<quake::RzOp>("CrzToRzCxRzCx", {"rz", "cx"},
+                                          rewriteCrzToRzCxRzCx)};
+        t["cry"] = {makeRule<quake::RyOp>("CryToRzCrxRz", {"rz", "crx"},
+                                          rewriteCryToRzCrxRz)};
+        return t;
+      }();
+  return table;
+}
+
+//===----------------------------------------------------------------------===//
+// Classification: maps an Operation* to the native-gate-set mnemonic it
+// represents, or std::nullopt if this pass doesn't recognize its shape
+// (wrong number of controls/targets/parameters, or an adjoint rotation --
+// none of the rules above handle adjoint Rx/Ry/Rz/R1, matching the scope of
+// the individual passes they were copied from).
+//===----------------------------------------------------------------------===//
+
+std::optional<std::string> classifyOp(Operation *op) {
+  if (auto g = dyn_cast<quake::HOp>(op)) {
+    if (g.getControls().empty() && g.getTargets().size() == 1)
+      return std::string("h");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::XOp>(op)) {
+    if (g.getTargets().size() != 1)
+      return std::nullopt;
+    if (g.getControls().empty())
+      return std::string("x");
+    if (g.getControls().size() == 1)
+      return std::string("cx");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::YOp>(op)) {
+    if (g.isAdj() || g.getTargets().size() != 1)
+      return std::nullopt;
+    if (g.getControls().empty())
+      return std::string("y");
+    if (g.getControls().size() == 1)
+      return std::string("cy");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::ZOp>(op)) {
+    if (g.getTargets().size() != 1)
+      return std::nullopt;
+    if (g.getControls().empty())
+      return std::string("z");
+    if (g.getControls().size() == 1)
+      return std::string("cz");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::SOp>(op)) {
+    if (!g.getControls().empty() || g.getTargets().size() != 1)
+      return std::nullopt;
+    return std::string(g.isAdj() ? "sdg" : "s");
+  }
+  if (auto g = dyn_cast<quake::TOp>(op)) {
+    if (!g.getControls().empty() || g.getTargets().size() != 1)
+      return std::nullopt;
+    return std::string(g.isAdj() ? "tdg" : "t");
+  }
+  if (auto g = dyn_cast<quake::R1Op>(op)) {
+    if (g.isAdj() || !g.getControls().empty() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 1)
+      return std::nullopt;
+    return std::string("r1");
+  }
+  if (auto g = dyn_cast<quake::RxOp>(op)) {
+    if (g.isAdj() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 1)
+      return std::nullopt;
+    if (!g.getControls().empty())
+      return g.getControls().size() == 1 ? std::optional<std::string>("crx")
+                                         : std::nullopt;
+    // A fixed pi/2 rotation about X is "sx" (sqrt-X): its own native gate on
+    // hardware whose basis doesn't include an arbitrary-angle Rx (e.g. WMI's
+    // {cz, x, y, rz, sx}). Distinguish it from a genuinely parameterized
+    // "rx" so it isn't left unresolved on such targets, and doesn't get
+    // bounced back and forth with the "h" rule that produces it.
+    if (auto cst = g.getParameter().getDefiningOp<mlir::arith::ConstantOp>()) {
+      if (auto fp = dyn_cast<FloatAttr>(cst.getValue())) {
+        if (std::abs(fp.getValueAsDouble() - M_PI_2) < 1e-9)
+          return std::string("sx");
+      }
+    }
+    return std::string("rx");
+  }
+  if (auto g = dyn_cast<quake::RyOp>(op)) {
+    if (g.isAdj() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 1)
+      return std::nullopt;
+    if (g.getControls().empty())
+      return std::string("ry");
+    if (g.getControls().size() == 1)
+      return std::string("cry");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::RzOp>(op)) {
+    if (g.isAdj() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 1)
+      return std::nullopt;
+    if (g.getControls().empty())
+      return std::string("rz");
+    if (g.getControls().size() == 1)
+      return std::string("crz");
+    return std::nullopt;
+  }
+  if (auto g = dyn_cast<quake::U2Op>(op)) {
+    if (!g.getControls().empty() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 2)
+      return std::nullopt;
+    return std::string("u2");
+  }
+  if (auto g = dyn_cast<quake::U3Op>(op)) {
+    if (!g.getControls().empty() || g.getTargets().size() != 1 ||
+        g.getParameters().size() != 3)
+      return std::nullopt;
+    return std::string("u3");
+  }
+  if (auto g = dyn_cast<quake::SwapOp>(op)) {
+    if (!g.getControls().empty() || g.getTargets().size() != 2)
+      return std::nullopt;
+    return std::string("swap");
+  }
+  if (auto g = dyn_cast<quake::PhasedRxOp>(op)) {
+    if (!g.isAdj() && g.getControls().empty() &&
+        g.getParameters().size() == 2 && g.getTargets().size() == 1)
+      return std::string("prx");
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+// "sx" (a fixed pi/2 rotation about X) is a strictly weaker ask than generic
+// "rx": any target that already declares arbitrary-angle "rx" native can
+// trivially perform its pi/2 special case too. Fold that one-way implication
+// into a single legality check used everywhere this pass asks "is this
+// mnemonic native?", instead of duplicating it at each call site.
+bool isNative(const llvm::StringSet<> &native, llvm::StringRef mnemonic) {
+  return native.contains(mnemonic) ||
+         (mnemonic == "sx" && native.contains("rx"));
+}
+
+// For a given native set, figures out -- for every mnemonic that isn't
+// itself native -- one rule that is *transitively* guaranteed to bottom out
+// in native gates (not just a rule whose immediate output happens to be
+// native already). This is a fixed-point over the whole table: a mnemonic is
+// "resolvable" if native, or if some rule for it produces only mnemonics
+// that are themselves resolvable.
+//
+// This is still not a cost model (it doesn't compare resolvable rules by
+// depth/gate count, it just takes the first resolvable one found), but
+// skipping it and only doing a one-hop lookahead is actively wrong: e.g. for
+// native = {h, rx, cx}, "crz" has no rule whose *immediate* output is fully
+// native, so a one-hop check always falls back to CrzToHCrxH -- which only
+// ever produces "crx", whose only rule (CrxToHCrzH) produces "crz" right
+// back. That pair bounces forever, and because each round wraps another H on
+// each side without ever cancelling the previous ones, the circuit grows
+// without bound instead of converging (confirmed by direct testing). The
+// fixed point below instead finds that CrzToRzCxRzCx -> {rz, cx} works,
+// because rz is itself resolvable via RzToHRxH -> {h, rx}.
+std::unordered_map<std::string, const DecompositionRule *> computeWitnesses(
+    const std::unordered_map<std::string, std::vector<DecompositionRule>>
+        &table,
+    const llvm::StringSet<> &native) {
+  std::unordered_map<std::string, const DecompositionRule *> witness;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto &entry : table) {
+      const std::string &mnemonic = entry.first;
+      if (isNative(native, mnemonic) || witness.count(mnemonic))
+        continue;
+      for (const auto &rule : entry.second) {
+        bool allResolvable = true;
+        for (const auto &produced : rule.produces) {
+          if (isNative(native, produced) || witness.count(produced))
+            continue;
+          allResolvable = false;
+          break;
+        }
+        if (allResolvable) {
+          witness[mnemonic] = &rule;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return witness;
+}
+
+// Expected qubit count and parameter count for each mnemonic.
+// Used to sanity check a QDMI reported operation before trusting it.
+// For example a device reporting rz with 0 parameters is not our rz.
+const std::unordered_map<std::string, std::pair<size_t, size_t>> &
+getMnemonicArity() {
+  static const std::unordered_map<std::string, std::pair<size_t, size_t>>
+      arity = {
+          {"h", {1, 0}},    {"x", {1, 0}},   {"y", {1, 0}},   {"z", {1, 0}},
+          {"s", {1, 0}},    {"sdg", {1, 0}}, {"t", {1, 0}},   {"tdg", {1, 0}},
+          {"sx", {1, 0}},   {"r1", {1, 1}},  {"rx", {1, 1}},  {"ry", {1, 1}},
+          {"rz", {1, 1}},   {"u2", {1, 2}},  {"u3", {1, 3}},  {"prx", {1, 2}},
+          {"swap", {2, 0}}, {"cx", {2, 0}},  {"cz", {2, 0}},  {"cy", {2, 0}},
+          {"crx", {2, 1}},  {"cry", {2, 1}}, {"crz", {2, 1}},
+      };
+  return arity;
+}
+
+// Builds the native gate set from a QDMI device.
+// There is no alias table, so operation names are used as is.
+// An operation with the wrong arity for its name is dropped with a warning.
+llvm::Expected<llvm::StringSet<>>
+getNativeGateSetFromQDMI(const std::string &conf, const std::string &deviceName,
+                         Location loc) {
+  auto device = createQDMIDevice(
+      conf.c_str(), deviceName.empty() ? nullptr : deviceName.c_str());
+  if (!device)
+    return device.takeError();
+
+  auto gateSet = getDeviceNativeGateSet(*device);
+  if (!gateSet)
+    return gateSet.takeError();
+
+  const auto &arity = getMnemonicArity();
+  llvm::StringSet<> native;
+  for (const GateOperationInfo &gate : *gateSet) {
+    llvm::StringRef mnemonic = resolveMnemonicAlias(gate.gate_name);
+    auto it = arity.find(mnemonic.str()); // was: arity.find(gate.gate_name)
+    if (it != arity.end() && gate.num_qubits && gate.num_parameters &&
+        (*gate.num_qubits != it->second.first ||
+         *gate.num_parameters != it->second.second)) {
+      mlir::emitWarning(loc)
+          << "BasisConversion: QDMI device operation '" << gate.gate_name
+          << "' (" << *gate.num_qubits << " qubit(s), " << *gate.num_parameters
+          << " parameter(s)) does not match this pass's expected shape "
+             "for '"
+          << mnemonic << "', ignoring it as a native gate.";
+      continue;
+    }
+    native.insert(mnemonic); // was: native.insert(gate.gate_name)
+  }
+
+  if (native.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "QDMI device reported no operations usable as a native gate set");
+  return native;
+}
+
+struct BasisConversion
+    : public mqss::mqssci::codegen::impl::BasisConversionPassBase<
+          BasisConversion> {
+public:
+  BasisConversion() = default;
+
+  explicit BasisConversion(const BasisConversionPassOptions &options)
+      : BasisConversion() {
+    gates = options.gates;
+    qdmi = options.qdmi;
+    device = options.device;
+  }
+
+  void runOnOperation() override {
+    bool wasApplied = false;
+
+    MQSS_DEBUG("\n[Applying Pass: BasisConversion]\n");
+    auto &selector = getAnalysis<DialectAnalysisSelector>();
+    auto &analysis = *selector.get();
+    auto DialectTy = selector.getDialect();
+
+    auto kernel = getOperation();
+
+    llvm::StringSet<> native;
+
+    if (!qdmi.empty()) {
+      if (gates.getNumOccurrences() > 0)
+        mlir::emitWarning(kernel.getLoc())
+            << "BasisConversion: both 'qdmi' and 'gates' were given; using "
+               "the QDMI device's native gate set and ignoring 'gates'.";
+      auto qdmiNative = getNativeGateSetFromQDMI(qdmi, device, kernel.getLoc());
+      if (!qdmiNative) {
+        mlir::emitError(kernel.getLoc())
+            << "BasisConversion: " << llvm::toString(qdmiNative.takeError());
+        return signalPassFailure();
+      }
+      native = std::move(*qdmiNative);
+    } else {
+      auto split_gates = split(gates, ",");
+      for (const auto &gate : split_gates)
+        native.insert(resolveMnemonicAlias(gate));
+    }
+
+    const auto &table = getDecompositionTable(DialectTy);
+    // Computed once, up front: for every non-native mnemonic that can
+    // transitively bottom out in native gates, the rule that gets it there.
+    // Mnemonics absent from this map (but present in the table) are known
+    // gates this pass genuinely cannot legalize into the requested set --
+    // warned about once below, and left untouched, rather than repeatedly
+    // rewritten with a rule that can never converge.
+    const auto witnesses = computeWitnesses(table, native);
+    llvm::StringSet<> warnedUnresolvable;
+
+    // Applying a witness rule can itself introduce ops whose own witness
+    // rule hasn't fired yet (e.g. crz -> {rz, cx}, then rz -> {h, rx}), so
+    // this still needs multiple rounds; the loop is now just mechanically
+    // unwinding an acyclic chain, so it always reaches a fixed point in at
+    // most table.size() rounds. The cap is only a defensive backstop.
+    constexpr int maxRounds = 64;
+    for (int round = 0; round < maxRounds; ++round) {
+      bool changed = false;
+      kernel.walk([&](Operation *op) {
+        std::optional<std::string> mnemonic = classifyOp(op);
+        if (!mnemonic || isNative(native, *mnemonic))
+          return;
+        auto wit = witnesses.find(*mnemonic);
+        if (wit == witnesses.end()) {
+          if (table.count(*mnemonic) &&
+              warnedUnresolvable.insert(*mnemonic).second)
+            mlir::emitError(kernel.getLoc())
+                << "BasisConversion Op: '" << *mnemonic
+                << "' cannot be decomposed into the requested native gate set"
+                << (table.count(*mnemonic)
+                        ? ""
+                        : " (no decomposition rule exists for it)");
+          signalPassFailure();
+          return;
+        }
+        IRRewriter rewriter(op->getContext());
+        auto result = wit->second->apply(DialectTy, rewriter, op);
+        if (!result) {
+          mlir::emitError(kernel->getLoc(),
+                          "BasisConversion: Failed to apply pass!");
+          signalPassFailure();
+          return;
+        }
+        changed = true;
+        wasApplied = true;
+      });
+      if (!changed)
+        return;
+
+      // Some rules (e.g. CrzToRzCxRzCx) build a new op's angle out of an
+      // arithmetic expression -- arith.negf/arith.divf on a prior operand --
+      // rather than a literal constant. classifyOp()'s "is this angle
+      // exactly pi/2, i.e. sx?" check only matches a *direct*
+      // arith::ConstantOp definer (BasisConversionPass.cpp's classifyOp,
+      // above), not a foldable expression, so a rotation that's genuinely
+      // pi/2 can be misclassified as generic "rx" purely because of how many
+      // decomposition hops it went through -- which can leave it stuck
+      // un-legalizable on a target whose native set has "sx" but not generic
+      // "rx" (e.g. wmi's {cz, x, y, rz, sx}). Fold such expressions back down
+      // to literal constants before the next round's classifyOp() calls
+      // re-inspect whatever this round just produced. An empty pattern set
+      // is enough: GreedyRewriteConfig folds constant-foldable ops by
+      // default, so this is purely a folding/DCE pass, not a general
+      // canonicalization.
+      mlir::RewritePatternSet emptyPatterns(kernel.getContext());
+      (void)mlir::applyPatternsGreedily(
+          kernel, mlir::FrozenRewritePatternSet(std::move(emptyPatterns)));
+
+      if (round == maxRounds - 1)
+        mlir::emitWarning(kernel.getLoc())
+            << "BasisConversion: gave up after " << maxRounds
+            << " rounds without reaching a fixed point";
+    }
+    if (failed(analysis.verifyModule())) {
+      llvm::errs() << "[" << getArgument() << "]"
+                   << " : MLIR Module verification failed\n";
+      signalPassFailure();
+      return;
+    }
+  }
+};
+
+} // namespace
+
+std::unique_ptr<mlir::Pass> mqss::mqssci::codegen::BasisConversionPass() {
+  return std::make_unique<BasisConversion>();
+}
+
+std::unique_ptr<Pass> mqss::mqssci::codegen::createBasisConversionPass(
+    const BasisConversionPassOptions &options) {
+  return std::make_unique<BasisConversion>(options);
+}
