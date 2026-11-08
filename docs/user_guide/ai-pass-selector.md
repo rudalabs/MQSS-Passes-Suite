@@ -36,7 +36,7 @@ encoding, network architectures, the RL algorithms and annotated research-paper 
 | `AI/convert_qasm_dataset_to_quake.cpp` | Converts a dataset from `AI/Datasets/Qasm/<name>` to `AI/Datasets/Quake/<name>`.                                |
 | `AI/convert_quake_testsuite_to_tikz.cpp` | Renders the `passtest`, `tensortest` and `randomtest` suites into LaTeX/TikZ (`AI/Datasets/Latex`).           |
 | `AI/include`, `AI/src`                 | The `ai_core` library: `Environment/`, `NeuralNetworks/` (including `Agents/{A2C,PPO,SDSAC,ACER}`), `Testsuites/`, `Utils/`. |
-| `AI/legacy`                            | The gate-pattern Quake pass library that makes up the agents' action space (see [below](#legacy-pass-library)). |
+| `AI/legacy`                            | The gate-pattern Quake pass library that makes up the agents' action space (see *Legacy pass library* below). |
 | `AI/Agents`                            | Trained agent weights (`*.pt`), e.g. `ppo-mq28-hybrid-actor.pt`.                                                |
 | `AI/Datasets`                          | `Qasm/`, `Quake/`, rendered `Latex/` test suites and `Evaluations/` (JSON results per agent).                    |
 | `AI/Circuits`                          | Small example circuits and their optimized counterparts.                                                        |
@@ -126,9 +126,9 @@ SD-SAC.
 | `evaluate`, `evaluation_sample`                        | `false`, `0`   | Evaluate instead of train; `0` means the whole dataset.                        |
 | `device`                                               | CUDA if available | Torch device.                                                               |
 | `nr_episodes`                                          | `1000001`      | Number of training episodes.                                                   |
-| `max_steps_per_episode`                                | `256`          | Truncation limit $T_\mathrm{max}$.                                             |
-| `max_steps_no_change`, `max_steps_same_action`         | `32`, `8`      | Termination criteria (see [reward](#environment-and-reward)).                  |
-| `discount_factor`, `gae_hyperparameter`                | `0.995`, `0.96`| $\gamma$ and $\lambda$.                                                        |
+| `max_steps_per_episode`                                | `256`          | Episode truncation limit.                                                       |
+| `max_steps_no_change`, `max_steps_same_action`         | `32`, `8`      | Termination criteria (see *Environment and reward*).                            |
+| `discount_factor`, `gae_hyperparameter`                | `0.995`, `0.96`| Discount factor and GAE lambda.                                                 |
 | `actor_learning_rate`, `critic_learning_rate`          | `1e-3`, `5e-3` | Learning rates. Optimizers are chosen with `actor_optimizer_idx` and `critic_optimizer_idx`. |
 | `entropy_coefficient`                                  | `0.01`         | Entropy bonus.                                                                 |
 | `probability_max_qubits`, `training_max_nr_gates`      | `0.4`, `5000`  | Shape of the randomly generated training circuits.                             |
@@ -142,16 +142,18 @@ list.
 `QuantumCircuitEnvironment` (`AI/include/Environment/quantum_circuit_environment.hpp`) wraps a
 Quake module:
 
-- **Observation:** an $[N, \mathrm{MAX\_QUBITS}+20]$ tensor with one row per gate. Each row holds
-  the qubit roles (control $-1$, target $+1$), a signed one-hot gate identity (adjoint $-1$) and up
+- **Observation:** an `[N, MAX_QUBITS + 20]` tensor with one row per gate. Each row holds
+  the qubit roles (control -1, target +1), a signed one-hot gate identity (adjoint -1) and up
   to three rotation parameters.
 - **Action:** the index of one pass in `PASS_FUNCTIONS` (`AI/include/Utils/passes_utils.hpp`).
 - **Reward:** after a pass that changed the circuit, the relative improvement in gate count and
   depth, normalized by the original circuit:
 
-$$
+```{math}
 r_t = \frac{G_{t-1}-G_t}{G_0} + \frac{D_{t-1}-D_t}{D_0}
-$$
+```
+
+Here G is the gate count, D is the depth, and the subscript is the step index.
 
 - **Termination:** the episode ends when no pass has changed the circuit for more than
   `max_steps_no_change` steps, or when the same non-changing pass has been picked more than
@@ -164,7 +166,7 @@ on (and overfit to) the dataset itself.
 
 ## Action space
 
-The action space has 62 passes:
+The action space has 65 passes, grouped here by kind:
 
 | Group             | Passes                                                                                                                                                  |
 |-------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -178,7 +180,7 @@ Decompositions make the circuit bigger on purpose. They let the agent expose can
 single reducing pass can reach.
 
 ```{important}
-The trained agents' output layer has exactly one entry per pass, in this order. Adding, removing or
+The trained agents' output layer has exactly one entry per pass, in `PASS_FUNCTIONS` order. Adding, removing or
 reordering entries in `PASS_FUNCTIONS` invalidates every agent in `AI/Agents`.
 ```
 
@@ -231,6 +233,8 @@ pass sequences, are in `AI/Datasets/Evaluations/Evaluation_Chemistry_<agent>_ful
 | `sdsac-mq28-lstm`   | 0                   | 0                    | 0                 |
 | `sdsac-mq28-tcn`    | 0                   | 0                    | 0                 |
 
-Reductions are absolute gate and depth reductions averaged per circuit. Training on the MQTBench
+Reductions are absolute gate and depth reductions averaged per circuit. Matching rows (for example
+`ppo-mq28-hybrid` and `sdsac-mq28-hybrid`) aren't duplicates: the agents chose different pass
+sequences on some circuits but reached the same final circuit every time. Training on the MQTBench
 statistics is still an open problem: its large circuits produce observation tensors too big to fit
 in memory.
